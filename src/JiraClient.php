@@ -59,7 +59,7 @@ class JiraClient
      *
      * @throws JiraException
      */
-    public function __construct(ConfigurationInterface $configuration = null, LoggerInterface $logger = null, string $path = './')
+    public function __construct(?ConfigurationInterface $configuration = null, ?LoggerInterface $logger = null, string $path = './')
     {
         if ($configuration === null) {
             if (!file_exists($path.'.env')) {
@@ -73,11 +73,21 @@ class JiraClient
 
         $this->json_mapper = new \JsonMapper();
 
+        // Adjust settings for JsonMapper v5.0 BC
+        if (property_exists($this->json_mapper, 'bStrictNullTypesInArrays')) {
+            $this->json_mapper->bStrictNullTypesInArrays = false; // if you want to allow nulls in arrays
+        }
+        $this->json_mapper->bStrictNullTypes = false; // if you want to allow nulls
+        $this->json_mapper->bStrictObjectTypeChecking = false; // if you want to disable strict type checking
+
         // Fix "\JiraRestApi\JsonMapperHelper::class" syntax error, unexpected 'class' (T_CLASS), expecting identifier (T_STRING) or variable (T_VARIABLE) or '{' or '$'
         $this->json_mapper->undefinedPropertyHandler = [new \JiraRestApi\JsonMapperHelper(), 'setUndefinedProperty'];
 
         // Properties that are annotated with `@var \DateTimeInterface` should result in \DateTime objects being created.
         $this->json_mapper->classMap['\\'.\DateTimeInterface::class] = \DateTime::class;
+
+        // Just class mapping is not enough, bStrictObjectTypeChecking must be set to false.
+        $this->json_mapper->bStrictObjectTypeChecking = false;
 
         // create logger
         if ($this->configuration->getJiraLogEnabled()) {
@@ -185,7 +195,7 @@ class JiraClient
      *
      * @return string|bool
      */
-    public function exec(string $context, array|string $post_data = null, string $custom_request = null, string $cookieFile = null): string|bool
+    public function exec(string $context, array|string|null $post_data = null, ?string $custom_request = null, ?string $cookieFile = null): string|bool
     {
         $url = $this->createUrlByContext($context);
 
@@ -195,31 +205,7 @@ class JiraClient
             $this->log->info("Curl $custom_request: $url JsonData=".json_encode($post_data, JSON_UNESCAPED_UNICODE));
         }
 
-        curl_reset($this->curl);
-        $ch = $this->curl;
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->configuration->getTimeout());
-        curl_setopt($ch, CURLOPT_TIMEOUT, $this->configuration->getTimeout());
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_URL, $url);
-
-        // post_data
-        if (!is_null($post_data)) {
-            // PUT REQUEST
-            if (!is_null($custom_request) && $custom_request == 'PUT') {
-                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
-            }
-            if (!is_null($custom_request) && $custom_request == 'DELETE') {
-                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
-            } else {
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
-            }
-        } else {
-            if (!is_null($custom_request) && $custom_request == 'DELETE') {
-                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
-            }
-        }
+        $ch = $this->prepareCurlRequest($url, $post_data, $custom_request);
 
         // save HTTP Headers
         $curl_http_headers = [
@@ -438,7 +424,7 @@ class JiraClient
     /**
      * Add authorize to curl request.
      */
-    protected function authorization(\CurlHandle $ch, array &$curl_http_headers, string $cookieFile = null): void
+    protected function authorization(\CurlHandle $ch, array &$curl_http_headers, ?string $cookieFile = null): void
     {
         // use cookie
         if ($this->getConfiguration()->isCookieAuthorizationEnabled()) {
@@ -513,7 +499,7 @@ class JiraClient
     /**
      * download and save into outDir.
      */
-    public function download(string $url, string $outDir, string $file, string $cookieFile = null): mixed
+    public function download(string $url, string $outDir, string $file, ?string $cookieFile = null): mixed
     {
         $curl_http_header = [
             'Accept: */*',
@@ -616,6 +602,37 @@ class JiraClient
         if ($this->getConfiguration()->getProxyType()) {
             curl_setopt($ch, CURLOPT_PROXYTYPE, $this->getConfiguration()->getProxyType());
         }
+    }
+
+    private function prepareCurlRequest(string $url, array|string|null $post_data = null, ?string $custom_request = null)
+    {
+        curl_reset($this->curl);
+        $ch = $this->curl;
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->configuration->getTimeout());
+        curl_setopt($ch, CURLOPT_TIMEOUT, $this->configuration->getTimeout());
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_URL, $url);
+
+        // post_data
+        if (!is_null($post_data)) {
+            // PUT REQUEST
+            if (!is_null($custom_request) && $custom_request == 'PUT') {
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
+            }
+            if (!is_null($custom_request) && $custom_request == 'DELETE') {
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+            } else {
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
+            }
+        } else {
+            if (!is_null($custom_request) && $custom_request == 'DELETE') {
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+            }
+        }
+
+        return $ch;
     }
 
     /**
